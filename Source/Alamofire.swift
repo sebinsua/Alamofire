@@ -22,7 +22,14 @@
 
 import Foundation
 
-// HTTP Method Definitions; see http://www.w3.org/Protocols/rfc2616/rfc2616-sec9.html
+/// Alamofire errors
+public let AlamofireErrorDomain = "com.alamofire.error"
+
+/**
+    HTTP method definitions.
+
+    See http://tools.ietf.org/html/rfc7231#section-4.3
+*/
 public enum Method: String {
     case OPTIONS = "OPTIONS"
     case GET = "GET"
@@ -35,12 +42,38 @@ public enum Method: String {
     case CONNECT = "CONNECT"
 }
 
+/**
+    Used to specify the way in which a set of parameters are applied to a URL request.
+*/
 public enum ParameterEncoding {
+    /**
+        A query string to be set as or appended to any existing URL query for `GET`, `HEAD`, and `DELETE` requests, or set as the body for requests with any other HTTP method. The `Content-Type` HTTP header field of an encoded request with HTTP body is set to `application/x-www-form-urlencoded`. Since there is no published specification for how to encode collection types, the convention of appending `[]` to the key for array values (`foo[]=1&foo[]=2`), and appending the key surrounded by square brackets for nested dictionary values (`foo[bar]=baz`).
+    */
     case URL
+
+    /**
+        Uses `NSJSONSerialization` to create a JSON representation of the parameters object, which is set as the body of the request. The `Content-Type` HTTP header field of an encoded request is set to `application/json`.
+    */
     case JSON
+
+    /**
+        Uses `NSPropertyListSerialization` to create a plist representation of the parameters object, according to the associated format and write options values, which is set as the body of the request. The `Content-Type` HTTP header field of an encoded request is set to `application/x-plist`.
+    */
     case PropertyList(NSPropertyListFormat, NSPropertyListWriteOptions)
+
+    /**
+        Uses the associated closure value to construct a new request given an existing request and parameters.
+    */
     case Custom((URLRequestConvertible, [String: AnyObject]?) -> (NSURLRequest, NSError?))
 
+    /**
+        Creates a URL request by encoding parameters and applying them onto an existing request.
+    
+        :param: URLRequest The request to have parameters applied
+        :param: parameters The parameters to apply
+
+        :returns: A tuple containing the constructed request and the error that occurred during parameter encoding, if any.
+    */
     public func encode(URLRequest: URLRequestConvertible, parameters: [String: AnyObject]?) -> (NSURLRequest, NSError?) {
         if parameters == nil {
             return (URLRequest.URLRequest, nil)
@@ -80,7 +113,7 @@ public enum ParameterEncoding {
                     mutableURLRequest.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
                 }
 
-                mutableURLRequest.HTTPBody = query(parameters!).dataUsingEncoding(NSUTF8StringEncoding, allowLossyConversion: false)
+                mutableURLRequest.HTTPBody = (CFURLCreateStringByAddingPercentEscapes(nil, query(parameters!) as NSString, nil, nil, CFStringConvertNSStringEncodingToEncoding(NSUTF8StringEncoding)) as NSString).dataUsingEncoding(NSUTF8StringEncoding, allowLossyConversion: false)
             }
         case .JSON:
             let options = NSJSONWritingOptions.allZeros
@@ -120,7 +153,11 @@ public enum ParameterEncoding {
 
 // MARK: - URLStringConvertible
 
+/**
+    Types adopting the `URLStringConvertible` protocol can be used to construct URL strings, which are then used to construct URL requests.
+*/
 public protocol URLStringConvertible {
+    /// The URL string.
     var URLString: String { get }
 }
 
@@ -150,7 +187,11 @@ extension NSURLRequest: URLStringConvertible {
 
 // MARK: - URLRequestConvertible
 
+/**
+    Types adopting the `URLRequestConvertible` protocol can be used to construct URL requests.
+*/
 public protocol URLRequestConvertible {
+    /// The URL request.
     var URLRequest: NSURLRequest { get }
 }
 
@@ -162,17 +203,24 @@ extension NSURLRequest: URLRequestConvertible {
 
 // MARK: -
 
+/**
+    Responsible for creating and managing `Request` objects, as well as their underlying `NSURLSession`.
+*/
 public class Manager {
+
+    /**
+        A shared instance of `Manager`, used by top-level Alamofire request methods, and suitable for use directly for any ad hoc requests.
+    */
     public class var sharedInstance: Manager {
         struct Singleton {
             static var configuration: NSURLSessionConfiguration = {
                 var configuration = NSURLSessionConfiguration.defaultSessionConfiguration()
 
                 configuration.HTTPAdditionalHeaders = {
-                    // Accept-Encoding HTTP Header; see http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.3
+                    // Accept-Encoding HTTP Header; see http://tools.ietf.org/html/rfc7230#section-4.2.3
                     let acceptEncoding: String = "gzip;q=1.0,compress;q=0.5"
 
-                    // Accept-Language HTTP Header; see http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.4
+                    // Accept-Language HTTP Header; see http://tools.ietf.org/html/rfc7231#section-5.3.5
                     let acceptLanguage: String = {
                         var components: [String] = []
                         for (index, languageCode) in enumerate(NSLocale.preferredLanguages() as [String]) {
@@ -186,7 +234,7 @@ public class Manager {
                         return join(",", components)
                     }()
 
-                    // User-Agent Header; see http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.43
+                    // User-Agent Header; see http://tools.ietf.org/html/rfc7231#section-5.5.3
                     let userAgent: String = {
                         let info = NSBundle.mainBundle().infoDictionary
                         let executable: AnyObject = info[kCFBundleExecutableKey] ?? "Unknown"
@@ -211,7 +259,6 @@ public class Manager {
                 return configuration
             }()
 
-
             static let instance = Manager(configuration: configuration)
         }
 
@@ -220,15 +267,20 @@ public class Manager {
 
     private let delegate: SessionDelegate
 
+    private let queue = dispatch_queue_create(nil, DISPATCH_QUEUE_SERIAL)
+
+    /// The underlying session.
     public let session: NSURLSession
 
+    /// Whether to start requests immediately after being constructed. `true` by default.
     public var startRequestsImmediately: Bool = true
 
-    let operationQueue: NSOperationQueue = NSOperationQueue()
-
+    /**
+        :param: configuration The configuration used to construct the managed session.
+    */
     required public init(configuration: NSURLSessionConfiguration? = nil) {
         self.delegate = SessionDelegate()
-        self.session = NSURLSession(configuration: configuration, delegate: delegate, delegateQueue: operationQueue)
+        self.session = NSURLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
     deinit {
@@ -237,9 +289,18 @@ public class Manager {
 
     // MARK: -
 
+    /**
+        Creates a request for the specified URL request.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: URLRequest The URL request
+
+        :returns: The created request.
+    */
     public func request(URLRequest: URLRequestConvertible) -> Request {
         var dataTask: NSURLSessionDataTask?
-        dispatch_sync(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)) {
+        dispatch_sync(queue) {
             dataTask = self.session.dataTaskWithRequest(URLRequest.URLRequest)
         }
 
@@ -431,14 +492,25 @@ public class Manager {
 
 // MARK: -
 
+/**
+    Responsible for sending a request and receiving the response and associated data from the server, as well as managing its underlying `NSURLSessionTask`.
+*/
 public class Request {
     private let delegate: TaskDelegate
 
-    public let session: NSURLSession
+    /// The underlying task.
     public var task: NSURLSessionTask { return delegate.task }
 
+    /// The session belonging to the underlying task.
+    public let session: NSURLSession
+
+    /// The request sent or to be sent to the server.
     public var request: NSURLRequest { return task.originalRequest }
+
+    /// The response received from the server, if any.
     public var response: NSHTTPURLResponse? { return task.response as? NSHTTPURLResponse }
+
+    /// The progress of the request lifecycle.
     public var progress: NSProgress? { return delegate.progress }
 
     private init(session: NSURLSession, task: NSURLSessionTask) {
@@ -458,12 +530,27 @@ public class Request {
 
     // MARK: Authentication
 
+    /**
+        Associates an HTTP Basic credential with the request.
+
+        :param: user The user.
+        :param: password The password.
+
+        :returns: The request.
+    */
     public func authenticate(#user: String, password: String) -> Self {
         let credential = NSURLCredential(user: user, password: password, persistence: .ForSession)
 
         return authenticate(usingCredential: credential)
     }
 
+    /**
+        Associates a specified credential with the request.
+
+        :param: credential The credential.
+
+        :returns: The request.
+    */
     public func authenticate(usingCredential credential: NSURLCredential) -> Self {
         delegate.credential = credential
 
@@ -472,6 +559,16 @@ public class Request {
 
     // MARK: Progress
 
+    /**
+        Sets a closure to be called periodically during the lifecycle of the request as data is written to or read from the server.
+
+        - For uploads, the progress closure returns the bytes written, total bytes written, and total bytes expected to write.
+        - For downloads, the progress closure returns the bytes read, total bytes read, and total bytes expected to write.
+
+        :param: closure The code to be executed periodically during the lifecycle of the request.
+
+        :returns: The request.
+    */
     public func progress(closure: ((Int64, Int64, Int64) -> Void)? = nil) -> Self {
         if let uploadDelegate = delegate as? UploadTaskDelegate {
             uploadDelegate.uploadProgress = closure
@@ -486,47 +583,74 @@ public class Request {
 
     // MARK: Response
 
+    /**
+        A closure used by response handlers that takes a request, response, and data and returns a serialized object and any error that occured in the process.
+    */
     public typealias Serializer = (NSURLRequest, NSHTTPURLResponse?, NSData?) -> (AnyObject?, NSError?)
 
+    /**
+        Creates a response serializer that returns the associated data as-is.
+
+        :returns: A data response serializer.
+    */
     public class func responseDataSerializer() -> Serializer {
         return { (request, response, data) in
             return (data, nil)
         }
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: completionHandler The code to be executed once the request has finished.
+
+        :returns: The request.
+    */
     public func response(completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         return response(Request.responseDataSerializer(), completionHandler: completionHandler)
     }
 
-    public func response(priority: Int = DISPATCH_QUEUE_PRIORITY_DEFAULT, queue: dispatch_queue_t? = nil, serializer: Serializer, completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
+    /**
+        Adds a handler to be called once the request has finished.
 
+        :param: priority The dispatch priority / quality of service used to process the response handler. `DISPATCH_QUEUE_PRIORITY_DEFAULT` by default.
+        :param: queue The queue on which the completion handler is dispatched.
+        :param: serializer The closure responsible for serializing the request, response, and data.
+        :param: completionHandler The code to be executed once the request has finished.
+
+        :returns: The request.
+    */
+    public func response(priority: Int = DISPATCH_QUEUE_PRIORITY_DEFAULT, queue: dispatch_queue_t? = nil, serializer: Serializer, completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         dispatch_async(delegate.queue, {
             dispatch_async(dispatch_get_global_queue(priority, 0), {
-                if var error = self.delegate.error {
-                    dispatch_async(queue ?? dispatch_get_main_queue(), {
-                        completionHandler(self.request, self.response, nil, error)
-                    })
-                } else {
-                    let (responseObject: AnyObject?, serializationError: NSError?) = serializer(self.request, self.response, self.delegate.data)
+                let (responseObject: AnyObject?, serializationError: NSError?) = serializer(self.request, self.response, self.delegate.data)
 
-                    dispatch_async(queue ?? dispatch_get_main_queue(), {
-                        completionHandler(self.request, self.response, responseObject, serializationError)
-                    })
-                }
+                dispatch_async(queue ?? dispatch_get_main_queue(), {
+                    completionHandler(self.request, self.response, responseObject, self.delegate.error ?? serializationError)
+                })
             })
         })
 
         return self
     }
 
+    /**
+        Suspends the request.
+    */
     public func suspend() {
         task.suspend()
     }
 
+    /**
+        Resumes the request.
+    */
     public func resume() {
         task.resume()
     }
 
+    /**
+        Cancels the request.
+    */
     public func cancel() {
         if let downloadDelegate = delegate as? DownloadTaskDelegate {
             downloadDelegate.downloadTask.cancelByProducingResumeData { (data) in
@@ -555,11 +679,14 @@ public class Request {
         init(task: NSURLSessionTask) {
             self.task = task
             self.progress = NSProgress(totalUnitCount: 0)
+            self.queue = {
+                let label: String = "com.alamofire.task-\(task.taskIdentifier)"
+                let queue = dispatch_queue_create((label as NSString).UTF8String, DISPATCH_QUEUE_SERIAL)
 
-            let label: String = "com.alamofire.task-\(task.taskIdentifier)"
-            let queue = dispatch_queue_create((label as NSString).UTF8String, DISPATCH_QUEUE_SERIAL)
-            dispatch_suspend(queue)
-            self.queue = queue
+                dispatch_suspend(queue)
+
+                return queue
+            }()
         }
 
         // MARK: NSURLSessionTaskDelegate
@@ -611,7 +738,10 @@ public class Request {
         }
 
         func URLSession(session: NSURLSession!, task: NSURLSessionTask!, didCompleteWithError error: NSError!) {
-            self.error = error
+            if error != nil {
+                self.error = error
+            }
+
             dispatch_resume(queue)
         }
     }
@@ -677,6 +807,145 @@ public class Request {
     }
 }
 
+// MARK: - Validation
+
+extension Request {
+
+    /**
+        A closure used to validate a request that takes a URL request and URL response, and returns whether the request was valid.
+    */
+    public typealias Validation = (NSURLRequest, NSHTTPURLResponse) -> (Bool)
+
+    /**
+        Validates the request, using the specified closure.
+
+        If validation fails, subsequent calls to response handlers will have an associated error.
+
+        :param: validation A closure to validate the request.
+
+        :returns: The request.
+    */
+    public func validate(validation: Validation) -> Self {
+        dispatch_async(delegate.queue) {
+            if self.response != nil && self.delegate.error == nil {
+                if !validation(self.request, self.response!) {
+                    self.delegate.error = NSError(domain: AlamofireErrorDomain, code: -1, userInfo: nil)
+                }
+            }
+        }
+
+        return self
+    }
+
+    // MARK: Status Code
+
+    private class func response(response: NSHTTPURLResponse, hasAcceptableStatusCode statusCodes: [Int]) -> Bool {
+        return contains(statusCodes, response.statusCode)
+    }
+
+    /**
+        Validates that the response has a status code in the specified range.
+
+        If validation fails, subsequent calls to response handlers will have an associated error.
+
+        :param: range The range of acceptable status codes.
+
+        :returns: The request.
+    */
+    public func validate(statusCode range: Range<Int>) -> Self {
+        return validate { (_, response) in
+            return Request.response(response, hasAcceptableStatusCode: range.map({$0}))
+        }
+    }
+
+    /**
+        Validates that the response has a status code in the specified array.
+
+        If validation fails, subsequent calls to response handlers will have an associated error.
+
+        :param: array The acceptable status codes.
+
+        :returns: The request.
+    */
+    public func validate(statusCode array: [Int]) -> Self {
+        return validate { (_, response) in
+            return Request.response(response, hasAcceptableStatusCode: array)
+        }
+    }
+
+    // MARK: Content-Type
+
+    private struct MIMEType {
+        let type: String
+        let subtype: String
+
+        init(_ string: String) {
+            let components = string.stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceAndNewlineCharacterSet()).substringToIndex(string.rangeOfString(";")?.endIndex ?? string.endIndex).componentsSeparatedByString("/")
+
+            self.type = components.first!
+            self.subtype = components.last!
+        }
+
+        func matches(MIME: MIMEType) -> Bool {
+            switch (type, subtype) {
+            case ("*", "*"), ("*", MIME.subtype), (MIME.type, "*"), (MIME.type, MIME.subtype):
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private class func response(response: NSHTTPURLResponse, hasAcceptableContentType contentTypes: [String]) -> Bool {
+        if response.MIMEType != nil {
+            let responseMIMEType = MIMEType(response.MIMEType!)
+            for acceptableMIMEType in contentTypes.map({MIMEType($0)}) {
+                if acceptableMIMEType.matches(responseMIMEType) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    /**
+        Validates that the response has a content type in the specified array.
+
+        If validation fails, subsequent calls to response handlers will have an associated error.
+
+        :param: contentType The acceptable content types, which may specify wildcard types and/or subtypes.
+
+        :returns: The request.
+    */
+    public func validate(contentType array: [String]) -> Self {
+        return validate {(_, response) in
+            return Request.response(response, hasAcceptableContentType: array)
+        }
+    }
+
+    // MARK: Automatic
+
+    /**
+        Validates that the response has a status code in the default acceptable range of 200...299, and that the content type matches any specified in the Accept HTTP header field.
+
+        If validation fails, subsequent calls to response handlers will have an associated error.
+
+        :returns: The request.
+    */
+    public func validate() -> Self {
+        let acceptableStatusCodes: Range<Int> = 200..<300
+        let acceptableContentTypes: [String] = {
+            if let accept = self.request.valueForHTTPHeaderField("Accept") {
+                return accept.componentsSeparatedByString(",")
+            }
+
+            return ["*/*"]
+        }()
+        
+        return validate(statusCode: acceptableStatusCodes).validate(contentType: acceptableContentTypes)
+    }
+}
 
 // MARK: - Upload
 
@@ -717,18 +986,48 @@ extension Manager {
 
     // MARK: File
 
+    /**
+        Creates a request for uploading a file to the specified URL request.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: URLRequest The URL request
+        :param: file The file to upload
+
+        :returns: The created upload request.
+    */
     public func upload(URLRequest: URLRequestConvertible, file: NSURL) -> Request {
         return upload(.File(URLRequest.URLRequest, file))
     }
 
     // MARK: Data
 
+    /**
+        Creates a request for uploading data to the specified URL request.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: URLRequest The URL request
+        :param: data The data to upload
+
+        :returns: The created upload request.
+    */
     public func upload(URLRequest: URLRequestConvertible, data: NSData) -> Request {
         return upload(.Data(URLRequest.URLRequest, data))
     }
 
     // MARK: Stream
 
+    /**
+        Creates a request for uploading a stream to the specified URL request.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: URLRequest The URL request
+        :param: stream The stream to upload
+
+        :returns: The created upload request.
+    */
     public func upload(URLRequest: URLRequestConvertible, stream: NSInputStream) -> Request {
         return upload(.Stream(URLRequest.URLRequest, stream))
     }
@@ -787,19 +1086,52 @@ extension Manager {
 
     // MARK: Request
 
+    /**
+        Creates a request for downloading from the specified URL request.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: URLRequest The URL request
+        :param: destination The closure used to determine the destination of the downloaded file.
+
+        :returns: The created download request.
+    */
     public func download(URLRequest: URLRequestConvertible, destination: (NSURL, NSHTTPURLResponse) -> (NSURL)) -> Request {
         return download(.Request(URLRequest.URLRequest), destination: destination)
     }
 
     // MARK: Resume Data
 
-    public func download(resumeData: NSData, destination: (NSURL, NSHTTPURLResponse) -> (NSURL)) -> Request {
+    /**
+        Creates a request for downloading from the resume data produced from a previous request cancellation.
+
+        If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+        :param: resumeData The resume data. This is an opaque data blob produced by `NSURLSessionDownloadTask` when a task is cancelled. See `NSURLSession -downloadTaskWithResumeData:` for additional information.
+        :param: destination The closure used to determine the destination of the downloaded file.
+
+        :returns: The created download request.
+    */
+    public func download(resumeData: NSData, destination: Request.DownloadFileDestination) -> Request {
         return download(.ResumeData(resumeData), destination: destination)
     }
 }
 
 extension Request {
-    public class func suggestedDownloadDestination(directory: NSSearchPathDirectory = .DocumentDirectory, domain: NSSearchPathDomainMask = .UserDomainMask) -> (NSURL, NSHTTPURLResponse) -> (NSURL) {
+    /**
+        A closure executed once a request has successfully completed in order to determine where to move the temporary file written to during the download process. The closure takes two arguments: the temporary file URL and the URL response, and returns a single argument: the file URL where the temporary file should be moved.
+    */
+    public typealias DownloadFileDestination = (NSURL, NSHTTPURLResponse) -> (NSURL)
+
+    /**
+        Creates a download file destination closure which uses the default file manager to move the temporary file to a file URL in the first available directory with the specified search path directory and search path domain mask.
+    
+        :param: directory The search path directory. `.DocumentDirectory` by default.
+        :param: domain The search path domain mask. `.UserDomainMask` by default.
+
+        :returns: A download file destination closure.
+    */
+    public class func suggestedDownloadDestination(directory: NSSearchPathDirectory = .DocumentDirectory, domain: NSSearchPathDomainMask = .UserDomainMask) -> DownloadFileDestination {
 
         return { (temporaryURL, response) -> (NSURL) in
             if let directoryURL = NSFileManager.defaultManager().URLsForDirectory(.DocumentDirectory, inDomains: .UserDomainMask)[0] as? NSURL {
@@ -856,6 +1188,7 @@ extension Request {
 // MARK: - Printable
 
 extension Request: Printable {
+    /// The textual representation used when written to an `OutputStreamType`, which includes the HTTP method and URL, as well as the response status code if a response has been received.
     public var description: String {
         var components: [String] = []
         if request.HTTPMethod != nil {
@@ -922,6 +1255,7 @@ extension Request: DebugPrintable {
         return join(" \\\n\t", components)
     }
 
+    /// The textual representation used when written to an `OutputStreamType`, in the form of a cURL command.
     public var debugDescription: String {
         return cURLRepresentation()
     }
@@ -932,6 +1266,13 @@ extension Request: DebugPrintable {
 // MARK: String
 
 extension Request {
+    /**
+        Creates a response serializer that returns a string initialized from the response data with the specified string encoding.
+
+        :param: encoding The string encoding. `NSUTF8StringEncoding` by default.
+
+        :returns: A string response serializer.
+    */
     public class func stringResponseSerializer(encoding: NSStringEncoding = NSUTF8StringEncoding) -> Serializer {
         return { (_, _, data) in
             let string = NSString(data: data!, encoding: encoding)
@@ -940,10 +1281,25 @@ extension Request {
         }
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+    :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the string, if one could be created from the URL response and data, and any error produced while creating the string.
+
+        :returns: The request.
+    */
     public func responseString(completionHandler: (NSURLRequest, NSHTTPURLResponse?, String?, NSError?) -> Void) -> Self {
         return responseString(completionHandler: completionHandler)
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: encoding The string encoding. `NSUTF8StringEncoding` by default.
+        :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the string, if one could be created from the URL response and data, and any error produced while creating the string.
+
+        :returns: The request.
+    */
     public func responseString(encoding: NSStringEncoding = NSUTF8StringEncoding, completionHandler: (NSURLRequest, NSHTTPURLResponse?, String?, NSError?) -> Void) -> Self  {
         return response(serializer: Request.stringResponseSerializer(encoding: encoding), completionHandler: { request, response, string, error in
             completionHandler(request, response, string as? String, error)
@@ -954,8 +1310,19 @@ extension Request {
 // MARK: JSON
 
 extension Request {
+    /**
+        Creates a response serializer that returns a JSON object constructed from the response data using `NSJSONSerialization` with the specified reading options.
+
+        :param: options The JSON serialization reading options. `.AllowFragments` by default.
+
+        :returns: A JSON object response serializer.
+    */
     public class func JSONResponseSerializer(options: NSJSONReadingOptions = .AllowFragments) -> Serializer {
         return { (request, response, data) in
+            if data == nil {
+                return (nil, nil)
+            }
+
             var serializationError: NSError?
             let JSON: AnyObject? = NSJSONSerialization.JSONObjectWithData(data!, options: options, error: &serializationError)
 
@@ -963,10 +1330,25 @@ extension Request {
         }
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the JSON object, if one could be created from the URL response and data, and any error produced while creating the JSON object.
+
+        :returns: The request.
+    */
     public func responseJSON(completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         return responseJSON(completionHandler: completionHandler)
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: options The JSON serialization reading options. `.AllowFragments` by default.
+        :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the JSON object, if one could be created from the URL response and data, and any error produced while creating the JSON object.
+
+        :returns: The request.
+    */
     public func responseJSON(options: NSJSONReadingOptions = .AllowFragments, completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         return response(serializer: Request.JSONResponseSerializer(options: options), completionHandler: { (request, response, JSON, error) in
             completionHandler(request, response, JSON, error)
@@ -977,8 +1359,19 @@ extension Request {
 // MARK: Property List
 
 extension Request {
+    /**
+        Creates a response serializer that returns an object constructed from the response data using `NSPropertyListSerialization` with the specified reading options.
+
+        :param: options The property list reading options. `0` by default.
+
+        :returns: A property list object response serializer.
+    */
     public class func propertyListResponseSerializer(options: NSPropertyListReadOptions = 0) -> Serializer {
         return { (request, response, data) in
+            if data == nil {
+                return (nil, nil)
+            }
+
             var propertyListSerializationError: NSError?
             let plist: AnyObject? = NSPropertyListSerialization.propertyListWithData(data!, options: options, format: nil, error: &propertyListSerializationError)
 
@@ -986,10 +1379,25 @@ extension Request {
         }
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the property list, if one could be created from the URL response and data, and any error produced while creating the property list.
+
+        :returns: The request.
+    */
     public func responsePropertyList(completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         return responsePropertyList(completionHandler: completionHandler)
     }
 
+    /**
+        Adds a handler to be called once the request has finished.
+
+        :param: options The property list reading options. `0` by default.
+        :param: completionHandler A closure to be executed once the request has finished. The closure takes 4 arguments: the URL request, the URL response, if one was received, the property list, if one could be created from the URL response and data, and any error produced while creating the property list.
+
+        :returns: The request.
+    */
     public func responsePropertyList(options: NSPropertyListReadOptions = 0, completionHandler: (NSURLRequest, NSHTTPURLResponse?, AnyObject?, NSError?) -> Void) -> Self {
         return response(serializer: Request.propertyListResponseSerializer(options: options), completionHandler: { (request, response, plist, error) in
             completionHandler(request, response, plist, error)
@@ -997,7 +1405,7 @@ extension Request {
     }
 }
 
-// MARK: - Convenience
+// MARK: - Convenience -
 
 private func URLRequest(method: Method, URLString: URLStringConvertible) -> NSURLRequest {
     let mutableURLRequest = NSMutableURLRequest(URL: NSURL(string: URLString.URLString))
@@ -1006,36 +1414,157 @@ private func URLRequest(method: Method, URLString: URLStringConvertible) -> NSUR
     return mutableURLRequest
 }
 
-// MARK: Request
+// MARK: - Request
 
+/**
+    Creates a request using the shared manager instance for the specified method, URL string, parameters, and parameter encoding.
+
+    :param: method The HTTP method.
+    :param: URLString The URL string.
+    :param: parameters The parameters. `nil` by default.
+    :param: encoding The parameter encoding. `.URL` by default.
+
+    :returns: The created request.
+*/
 public func request(method: Method, URLString: URLStringConvertible, parameters: [String: AnyObject]? = nil, encoding: ParameterEncoding = .URL) -> Request {
     return request(encoding.encode(URLRequest(method, URLString), parameters: parameters).0)
 }
 
+/**
+    Creates a request using the shared manager instance for the specified URL request.
+
+    If `startRequestsImmediately` is `true`, the request will have `resume()` called before being returned.
+
+    :param: URLRequest The URL request
+
+    :returns: The created request.
+*/
 public func request(URLRequest: URLRequestConvertible) -> Request {
     return Manager.sharedInstance.request(URLRequest.URLRequest)
 }
 
-// MARK: Upload
+// MARK: - Upload
 
+// MARK: File
+
+/**
+    Creates an upload request using the shared manager instance for the specified method, URL string, and file.
+
+    :param: method The HTTP method.
+    :param: URLString The URL string.
+    :param: file The file to upload.
+
+    :returns: The created upload request.
+*/
 public func upload(method: Method, URLString: URLStringConvertible, file: NSURL) -> Request {
     return Manager.sharedInstance.upload(URLRequest(method, URLString), file: file)
 }
 
+/**
+    Creates an upload request using the shared manager instance for the specified URL request and file.
+
+    :param: URLRequest The URL request.
+    :param: file The file to upload.
+
+    :returns: The created upload request.
+*/
+public func upload(URLRequest: URLRequestConvertible, file: NSURL) -> Request {
+    return Manager.sharedInstance.upload(URLRequest, file: file)
+}
+
+// MARK: Data
+
+/**
+    Creates an upload request using the shared manager instance for the specified method, URL string, and data.
+
+    :param: method The HTTP method.
+    :param: URLString The URL string.
+    :param: data The data to upload.
+
+    :returns: The created upload request.
+*/
 public func upload(method: Method, URLString: URLStringConvertible, data: NSData) -> Request {
     return Manager.sharedInstance.upload(URLRequest(method, URLString), data: data)
 }
 
+/**
+    Creates an upload request using the shared manager instance for the specified URL request and data.
+
+    :param: URLRequest The URL request.
+    :param: data The data to upload.
+
+    :returns: The created upload request.
+*/
+public func upload(URLRequest: URLRequestConvertible, data: NSData) -> Request {
+    return Manager.sharedInstance.upload(URLRequest, data: data)
+}
+
+// MARK: Stream
+
+/**
+    Creates an upload request using the shared manager instance for the specified method, URL string, and stream.
+
+    :param: method The HTTP method.
+    :param: URLString The URL string.
+    :param: stream The stream to upload.
+
+    :returns: The created upload request.
+*/
 public func upload(method: Method, URLString: URLStringConvertible, stream: NSInputStream) -> Request {
     return Manager.sharedInstance.upload(URLRequest(method, URLString), stream: stream)
 }
 
-// MARK: Download
+/**
+    Creates an upload request using the shared manager instance for the specified URL request and stream.
 
-public func download(method: Method, URLString: URLStringConvertible, destination: (NSURL, NSHTTPURLResponse) -> (NSURL)) -> Request {
+    :param: URLRequest The URL request.
+    :param: stream The stream to upload.
+
+    :returns: The created upload request.
+*/
+public func upload(URLRequest: URLRequestConvertible, stream: NSInputStream) -> Request {
+    return Manager.sharedInstance.upload(URLRequest, stream: stream)
+}
+
+// MARK: - Download
+
+// MARK: URL Request
+
+/**
+    Creates a download request using the shared manager instance for the specified method and URL string.
+
+    :param: method The HTTP method.
+    :param: URLString The URL string.
+    :param: destination The closure used to determine the destination of the downloaded file.
+
+    :returns: The created download request.
+*/
+public func download(method: Method, URLString: URLStringConvertible, destination: Request.DownloadFileDestination) -> Request {
     return Manager.sharedInstance.download(URLRequest(method, URLString), destination: destination)
 }
 
-public func download(resumeData data: NSData, destination: (NSURL, NSHTTPURLResponse) -> (NSURL)) -> Request {
+/**
+    Creates a download request using the shared manager instance for the specified URL request.
+
+    :param: URLRequest The URL request.
+    :param: destination The closure used to determine the destination of the downloaded file.
+
+    :returns: The created download request.
+*/
+public func download(URLRequest: URLRequestConvertible, destination: Request.DownloadFileDestination) -> Request {
+    return Manager.sharedInstance.download(URLRequest, destination: destination)
+}
+
+// MARK: Resume Data
+
+/**
+    Creates a request using the shared manager instance for downloading from the resume data produced from a previous request cancellation.
+
+    :param: resumeData The resume data. This is an opaque data blob produced by `NSURLSessionDownloadTask` when a task is cancelled. See `NSURLSession -downloadTaskWithResumeData:` for additional information.
+    :param: destination The closure used to determine the destination of the downloaded file.
+
+    :returns: The created download request.
+*/
+public func download(resumeData data: NSData, destination: Request.DownloadFileDestination) -> Request {
     return Manager.sharedInstance.download(data, destination: destination)
 }
